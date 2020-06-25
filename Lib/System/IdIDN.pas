@@ -203,8 +203,8 @@ uses
   SysUtils;
 
 var
-  hIdnDL : THandle = 0;
-  hNormaliz : THandle = 0;
+  hIdnDL : TIdLibHandle = IdNilHandle;
+  hNormaliz : TIdLibHandle = IdNilHandle;
 
 function UseIDNAPI : Boolean;
 begin
@@ -285,42 +285,42 @@ end;
 
 procedure InitIDNLibrary;
 begin
-  if hIdnDL = 0 then
+  if hIdnDL = IdNilHandle then
   begin
     hIdnDL := SafeLoadLibrary(LibNDL);
-    if hIdnDL <> 0 then
+    if hIdnDL <> IdNilHandle then
     begin
-      DownlevelGetLocaleScripts := GetProcAddress(hIdnDL, fn_DownlevelGetLocaleScripts);
-      DownlevelGetStringScripts := GetProcAddress(hIdnDL, fn_DownlevelGetStringScripts);
-      DownlevelVerifyScripts := GetProcAddress(hIdnDL, fn_DownlevelVerifyScripts);
+      DownlevelGetLocaleScripts := LoadLibFunction(hIdnDL, fn_DownlevelGetLocaleScripts);
+      DownlevelGetStringScripts := LoadLibFunction(hIdnDL, fn_DownlevelGetStringScripts);
+      DownlevelVerifyScripts := LoadLibFunction(hIdnDL, fn_DownlevelVerifyScripts);
     end;
   end;
 
-  if hNormaliz = 0 then
+  if hNormaliz = IdNilHandle then
   begin
     hNormaliz := SafeLoadLibrary(LibNormaliz);
-    if hNormaliz <> 0 then
+    if hNormaliz <> IdNilHandle then
     begin
-      IdnToUnicode := GetProcAddress(hNormaliz, fn_IdnToUnicode);
-      IdnToNameprepUnicode := GetProcAddress(hNormaliz, fn_IdnToNameprepUnicode);
-      IdnToAscii := GetProcAddress(hNormaliz, fn_IdnToAscii);
-      IsNormalizedString := GetProcAddress(hNormaliz,fn_IsNormalizedString);
-      NormalizeString := GetProcAddress(hNormaliz, fn_NormalizeString);
+      IdnToUnicode := LoadLibFunction(hNormaliz, fn_IdnToUnicode);
+      IdnToNameprepUnicode := LoadLibFunction(hNormaliz, fn_IdnToNameprepUnicode);
+      IdnToAscii := LoadLibFunction(hNormaliz, fn_IdnToAscii);
+      IsNormalizedString := LoadLibFunction(hNormaliz,fn_IsNormalizedString);
+      NormalizeString := LoadLibFunction(hNormaliz, fn_NormalizeString);
     end;
   end;
 end;
 
 procedure CloseIDNLibrary;
 var
-  h : THandle;
+  h : TIdLibHandle;
 begin
-  h := InterlockedExchangeTHandle(hIdnDL, 0);
-  if h <> 0 then begin
+  h := InterlockedExchangeTLibHandle(hIdnDL, IdNilHandle);
+  if h <> IdNilHandle then begin
     FreeLibrary(h);
   end;
 
-  h := InterlockedExchangeTHandle(hNormaliz, 0);
-  if h <> 0 then begin
+  h := InterlockedExchangeTLibHandle(hNormaliz, IdNilHandle);
+  if h <> IdNilHandle then begin
     FreeLibrary(h);
   end;
 

@@ -45,9 +45,7 @@ interface
 //Put FPC into Delphi mode
 
 uses
-  {$IFDEF VCL_2010_OR_ABOVE}
-  Classes,    //here to facilitate inlining
-  {$ENDIF}
+  Classes,
   IdException,
   IdGlobal,
   IdIPMCastBase,
@@ -88,10 +86,14 @@ type
     FBufferSize: Integer;
     FCurrentBinding: TIdSocketHandle;
     FListenerThread: TIdIPMCastListenerThread;
+    FOnBeforeBind: TIdSocketHandleEvent;
+    FOnAfterBind: TNotifyEvent;
     FOnIPMCastRead: TIPMCastReadEvent;
     FThreadedEvent: boolean;
     //
     procedure CloseBinding; override;
+    procedure DoBeforeBind(AHandle: TIdSocketHandle); virtual;
+    procedure DoAfterBind; virtual;
     procedure DoIPMCastRead(const AData: TIdBytes; ABinding: TIdSocketHandle);virtual;
     function GetActive: Boolean; override;
     function GetBinding: TIdSocketHandle; override;
@@ -104,7 +106,7 @@ type
     destructor Destroy; override;
     //
   published
-    property IPVersion;
+    property IPVersion default ID_DEFAULT_IP_VERSION;
     property Active;
     property Bindings: TIdSocketHandles read FBindings write SetBindings;
     property BufferSize: Integer read FBufferSize write FBufferSize default ID_UDP_BUFFERSIZE;
@@ -112,6 +114,8 @@ type
     property MulticastGroup;
     property ReuseSocket;
     property ThreadedEvent: boolean read FThreadedEvent write FThreadedEvent default DEF_IMP_THREADEDEVENT;
+    property OnBeforeBind: TIdSocketHandleEvent read FOnBeforeBind write FOnBeforeBind;
+    property OnAfterBind: TNotifyEvent read FOnAfterBind write FOnAfterBind;
     property OnIPMCastRead: TIPMCastReadEvent read FOnIPMCastRead write FOnIPMCastRead;
   end;
 
@@ -168,16 +172,37 @@ begin
   end;
 end;
 
+procedure TIdIPMCastClient.DoBeforeBind(AHandle: TIdSocketHandle);
+begin
+  if Assigned(FOnBeforeBind) then begin
+    FOnBeforeBind(AHandle);
+  end;
+end;
+
+procedure TIdIPMCastClient.DoAfterBind;
+begin
+  if Assigned(FOnAfterBind) then begin
+    FOnAfterBind(Self);
+  end;
+end;
+
 function TIdIPMCastClient.GetActive: Boolean;
 begin
-  // inherited GetActive keeps track of design-time Active property
-  Result := inherited GetActive or
-            (Assigned(FCurrentBinding) and FCurrentBinding.HandleAllocated);
+  if IsDesignTime then begin
+    // inherited GetActive keeps track of design-time Active property
+    Result := inherited GetActive;
+  end else begin
+    Result := Assigned(FCurrentBinding);
+    if Result then begin
+      Result := FCurrentBinding.HandleAllocated;
+    end;
+  end;
 end;
 
 function TIdIPMCastClient.GetBinding: TIdSocketHandle;
 var
   i: integer;
+  LBinding: TIdSocketHandle;
 begin
   if not Assigned(FCurrentBinding) then
   begin
@@ -188,27 +213,38 @@ begin
         raise EIdMCastNoBindings.Create(RSNoBindingsSpecified);
       end;
     end;
+
     for i := 0 to Bindings.Count - 1 do begin
-      Bindings[i].AllocateSocket(Id_SOCK_DGRAM);
-      // do not overwrite if the default. This allows ReuseSocket to be set per binding
-      if FReuseSocket <> rsOSDependent then begin
-        Bindings[i].ReuseSocket := FReuseSocket;
+      try
+        LBinding := Bindings[i];
+        LBinding.AllocateSocket(Id_SOCK_DGRAM);
+        // do not overwrite if the default. This allows ReuseSocket to be set per binding
+        if FReuseSocket <> rsOSDependent then begin
+          LBinding.ReuseSocket := FReuseSocket;
+        end;
+        DoBeforeBind(LBinding);
+        LBinding.Bind;
+        LBinding.AddMulticastMembership(FMulticastGroup);
+        if not Assigned(FCurrentBinding) then begin
+          FCurrentBinding := LBinding;
+        end;
+      except
       end;
-      Bindings[i].Bind;
-      Bindings[i].AddMulticastMembership(FMulticastGroup);
     end;
-    FCurrentBinding := Bindings[0];
+
+    DoAfterBind;
+
     // RLebeau: why only one listener thread total, instead of one per Binding,
     // like TIdUDPServer uses?
     FListenerThread := TIdIPMCastListenerThread.Create(Self);
-    FListenerThread.Start;
   end;
+
   Result := FCurrentBinding;
 end;
 
 function TIdIPMCastClient.GetDefaultPort: integer;
 begin
-  result := FBindings.DefaultPort;
+  Result := FBindings.DefaultPort;
 end;
 
 procedure TIdIPMCastClient.PacketReceived(const AData: TIdBytes; ABinding: TIdSocketHandle);
@@ -240,12 +276,18 @@ end;
 { TIdIPMCastListenerThread }
 
 constructor TIdIPMCastListenerThread.Create(AOwner: TIdIPMCastClient);
+var
+  LName: string;
 begin
-  inherited Create(True);
   FAcceptWait := 1000;
   FBufferSize := AOwner.BufferSize;
   FBuffer := nil;
   FServer := AOwner;
+  LName := AOwner.Name;
+  if LName = '' then begin
+    LName := 'IdIPMCastClient'; {do not localize}
+  end;
+  inherited Create(False, False, LName + ' Listener'); {do not localize}
 end;
 
 destructor TIdIPMCastListenerThread.Destroy;
@@ -259,52 +301,65 @@ var
   PeerPort: TIdPort;
   PeerIPVersion: TIdIPVersion;
   ByteCount: Integer;
-  LReadList: TIdSocketList;
+  LSocketList, LReadList: TIdSocketList;
   i: Integer;
   LBuffer : TIdBytes;
 begin
   SetLength(LBuffer, FBufferSize);
 
   // create a socket list to select for read
-  LReadList := TIdSocketList.CreateSocketList;
+  LSocketList := TIdSocketList.CreateSocketList;
   try
     // fill list of socket handles for reading
     for i := 0 to FServer.Bindings.Count - 1 do
     begin
-      LReadList.Add(FServer.Bindings[i].Handle);
+      LSocketList.Add(FServer.Bindings[i].Handle);
     end;
 
-    // select the handles for reading
-    LReadList.SelectRead(AcceptWait);
-
-    for i := 0 to LReadList.Count - 1 do
-    begin
-      // Doublecheck to see if we've been stopped
-      // Depending on timing - may not reach here
-      // if stopped the run method of the ancestor
-
-      if not Stopped then
+    LReadList := TIdSocketList.CreateSocketList;
+    try
+      while not Stopped do
       begin
-        IncomingData := FServer.Bindings.BindingByHandle(TIdStackSocketHandle(LReadList[i]));
-        ByteCount := IncomingData.RecvFrom(LBuffer, PeerIP, PeerPort, PeerIPVersion);
-        // RLebeau: some protocols make use of 0-length messages, so don't discard
-        // them here. This is not connection-oriented, so recvfrom() only returns
-        // 0 if a 0-length packet was actually received...
-        if ByteCount >= 0 then
+        // select the handles for reading
+        LReadList.Clear;
+        if LSocketList.SelectReadList(LReadList, AcceptWait) then
         begin
-          SetLength(FBuffer, ByteCount);
-          CopyTIdBytes(LBuffer, 0, FBuffer, 0, ByteCount);
-          IncomingData.SetPeer(PeerIP, PeerPort, PeerIPVersion);
-          if FServer.ThreadedEvent then begin
-            IPMCastRead;
-          end else begin
-            Synchronize(IPMCastRead);
+          for i := 0 to LReadList.Count - 1 do
+          begin
+            // Doublecheck to see if we've been stopped
+            // Depending on timing - may not reach here
+            // if stopped the run method of the ancestor
+            if Stopped then begin
+              Exit;
+            end;
+
+            IncomingData := FServer.Bindings.BindingByHandle(LReadList[i]);
+            if IncomingData <> nil then
+            begin
+              ByteCount := IncomingData.RecvFrom(LBuffer, PeerIP, PeerPort, PeerIPVersion);
+              // RLebeau: some protocols make use of 0-length messages, so don't discard
+              // them here. This is not connection-oriented, so recvfrom() only returns
+              // 0 if a 0-length packet was actually received...
+              if ByteCount >= 0 then
+              begin
+                SetLength(FBuffer, ByteCount);
+                CopyTIdBytes(LBuffer, 0, FBuffer, 0, ByteCount);
+                IncomingData.SetPeer(PeerIP, PeerPort, PeerIPVersion);
+                if FServer.ThreadedEvent then begin
+                  IPMCastRead;
+                end else begin
+                  Synchronize(IPMCastRead);
+                end;
+              end;
+            end;
           end;
         end;
       end;
+    finally
+      LReadList.Free;
     end;
   finally
-    LReadList.Free;
+    LSocketList.Free;
   end;
 end;
 

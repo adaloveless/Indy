@@ -67,6 +67,12 @@ interface
 
 {$i IdCompilerDefines.inc}
 
+{$IFDEF HAS_STATIC_TThread_ForceQueue}
+  {$IFDEF BROKEN_TThread_ForceQueue}
+    {$UNDEF HAS_STATIC_TThread_ForceQueue}
+  {$ENDIF}
+{$ENDIF}
+
 {$UNDEF NotifyThreadNeeded}
 {$IFNDEF HAS_STATIC_TThread_Synchronize}
   {$DEFINE NotifyThreadNeeded}
@@ -237,8 +243,8 @@ begin
   // Need to use something like InterlockedCompareExchangeObj() so any
   // duplicate threads can be freed...
   {
-  Thread := TIdNotifyThread.Create(True);
-  if InterlockedCompareExchangeObj(GNotifyThread, Thread, nil) <> nil then begin
+  Thread := TIdNotifyThread.Create;
+  if InterlockedCompareExchangeObj(TObject(GNotifyThread), Thread, nil) <> nil then begin
     Thread.Free;
   end else begin
     Thread.Start;
@@ -246,6 +252,7 @@ begin
   }
   if GNotifyThread = nil then begin
     GNotifyThread := TIdNotifyThread.Create;
+    GNotifyThread.Start;
   end;
 end;
 {$ENDIF}
@@ -307,6 +314,7 @@ begin
     {$IFDEF HAS_STATIC_TThread_Synchronize}
     // Fortunately, the static versions of TThread.Synchronize() can skip the
     // race conditions when the AThread parameter is nil, so we are safe here...
+    // RS-78837
     TThread.Synchronize(nil, SyncProc);
     {$ELSE}
     // However, in Delphi 7 and later, the static versions of TThread.Synchronize()
@@ -607,10 +615,9 @@ end;
 
 constructor TIdNotifyThread.Create;
 begin
+  inherited Create(True, False, 'IdNotify'); {do not localize}
   FEvent := TIdLocalEvent.Create;
   FNotifications := TIdNotifyThreadList.Create;
-  // Must be before - Thread starts running when we call inherited
-  inherited Create(False, False, 'IdNotify'); {do not localize}
 end;
 
 destructor TIdNotifyThread.Destroy;

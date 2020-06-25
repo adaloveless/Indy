@@ -70,7 +70,7 @@ type
   EWBBInvalidIdxSetStringVar = class(EWBBException);
   EWBBInvalidStringVar = class(EWBBException);
 
-  {$IFNDEF VCL_10_1_BERLIN_OR_ABOVE}
+  {$IFNDEF VCL_10_1_OR_ABOVE}
     {$DEFINE WBB_ANSI}
   {$ENDIF}
 
@@ -89,7 +89,7 @@ type
     function GetRemoteIP: string; override;
     function GetRawPathInfo: {$IFDEF WBB_ANSI}AnsiString{$ELSE}string{$ENDIF}; override;
     {$ENDIF}
-    {$IFDEF VCL_10_1_BERLIN_OR_ABOVE}
+    {$IFDEF VCL_10_1_OR_ABOVE}
     function GetRawContent: TBytes; override;
     {$ENDIF}
   public
@@ -305,7 +305,7 @@ begin
 end;
 {$ENDIF}
 
-{$IFDEF VCL_10_1_BERLIN_OR_ABOVE}
+{$IFDEF VCL_10_1_OR_ABOVE}
 function TIdHTTPAppRequest.GetRawContent: TBytes;
 var
   LPos: TIdStreamSize;
@@ -408,7 +408,7 @@ begin
           Result := AnsiString(BytesToStringRaw(LBytes));
             {$ELSE}
           SetString(Result, PAnsiChar(LBytes), Length(LBytes));
-              {$IFDEF VCL_2009_OR_ABOVE}
+              {$IFDEF HAS_SetCodePage}
           // RLebeau 2/21/2009: For D2009+, the AnsiString payload should have
           // the proper codepage assigned to it as well so it can be converted
           // correctly if assigned to other string variables later on...
@@ -487,7 +487,7 @@ begin
   Result := AnsiString(BytesToStringRaw(LBytes));
   {$ELSE}
   SetString(Result, PAnsiChar(LBytes), Length(LBytes));
-    {$IFDEF VCL_2009_OR_ABOVE}
+    {$IFDEF HAS_SetCodePage}
   // RLebeau 2/21/2009: For D2009+, the AnsiString payload should have
   // the proper codepage assigned to it as well so it can be converted
   // correctly if assigned to other string variables later on...
@@ -596,7 +596,7 @@ begin
   Result := AnsiString(BytesToStringRaw(LBytes));
     {$ELSE}
   SetString(Result, PAnsiChar(LBytes), Length(LBytes));
-      {$IFDEF VCL_2009_OR_ABOVE}
+      {$IFDEF HAS_SetCodePage}
   // RLebeau 2/21/2009: for D2009+, the AnsiString payload should have
   // the proper codepage assigned to it as well so it can be converted
   // correctly if assigned to other string variables later on...
@@ -753,7 +753,7 @@ begin
   // Reset to -1 so Indy will auto set it
   FResponseInfo.ContentLength := -1;
   MoveCookiesAndCustomHeaders;
-  {$IFDEF VCL_10_1_BERLIN_OR_ABOVE}
+  {$IFDEF VCL_10_1_OR_ABOVE}
   // TODO: This code may not be in the correct location.
   if (FResponseInfo.ContentType = '') and
     ((FResponseInfo.ContentText <> '') or (Assigned(FResponseInfo.ContentStream))) and
@@ -806,7 +806,11 @@ begin
       LValue := string(AValue);
     end;
   end;
+
   FResponseInfo.ContentText := LValue;
+  // TODO: use Length(AValue) instead, as the ContentText *should* get re-encoded
+  // back to the same value as AValue when transmitted.  Or, just set ContentLength
+  // to -1 and let Indy calculate it later...
   FResponseInfo.ContentLength := Length(LValue);
 
   {$ELSE}

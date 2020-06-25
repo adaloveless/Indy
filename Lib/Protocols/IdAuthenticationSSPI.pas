@@ -238,7 +238,7 @@ type
   private
     fLoadPending, fIsAvailable: Boolean;
     fPFunctionTable: PSecurityFunctionTable;
-    fDLLHandle: THandle;
+    fDLLHandle: TIdLibHandle;
     procedure ReleaseFunctionTable;
     procedure CheckAvailable;
     function GetFunctionTable: SecurityFunctionTable;
@@ -683,10 +683,10 @@ function TSSPIInterface.IsAvailable: Boolean;
     //In Windows, you should use SafeLoadLibrary instead of the LoadLibrary API
     //call because LoadLibrary messes with the FPU control word.
     fDLLHandle := SafeLoadLibrary(dllName);
-    if fDLLHandle > 0 then begin
+    if fDLLHandle <> IdNilHandle then begin
       { get InitSecurityInterface entry point
         and call it to fetch SPPI function table}
-      entrypoint := GetProcAddress(fDLLHandle, SECURITY_ENTRYPOINT);
+      entrypoint := LoadLibFunction(fDLLHandle, SECURITY_ENTRYPOINT);
       fPFunctionTable := entrypoint();
       { let's see what SSPI functions are available
         and if we can continue on with the set }
@@ -706,10 +706,10 @@ function TSSPIInterface.IsAvailable: Boolean;
       {$IFDEF SET_ENCRYPT_IN_FT_WITH_GETPROCADDRESS_FUDGE}
       { fudge for Encrypt/DecryptMessage }
       if not Assigned(fPFunctionTable^.EncryptMessage) then begin
-        fPFunctionTable^.EncryptMessage := GetProcAddress(fDLLHandle, ENCRYPT_MESSAGE);
+        fPFunctionTable^.EncryptMessage := LoadLibFunction(fDLLHandle, ENCRYPT_MESSAGE);
       end;
       if not Assigned(fPFunctionTable^.DecryptMessage) then begin
-        fPFunctionTable^.DecryptMessage := GetProcAddress(fDLLHandle, DECRYPT_MESSAGE);
+        fPFunctionTable^.DecryptMessage := LoadLibFunction(fDLLHandle, DECRYPT_MESSAGE);
       end;
       {$ENDIF}
     end;
@@ -737,7 +737,10 @@ end;
 destructor TSSPIInterface.Destroy;
 begin
   ReleaseFunctionTable;
-  FreeLibrary(fDLLHandle);
+  if fDLLHandle <> IdNilHandle then begin
+    FreeLibrary(fDLLHandle);
+    fDLLHandle := IdNilHandle;
+  end;
   inherited Destroy;
 end;
 
@@ -1199,26 +1202,10 @@ function TIdSSPINTLMAuthentication.DoNext: TIdAuthWhatsNext;
 begin
   Result := wnDoRequest;
   case FCurrentStep of
-    0:
+    //Authentication() does the 2>3 progression
+    0, 1, 3:
       begin
-        {if (Length(Username) > 0) and (Length(Password) > 0) then
-        begin}
-        Result := wnDoRequest;
-        FCurrentStep := 1;
-        {end
-        else begin
-          result := wnAskTheProgram;
-        end;}
-      end;
-    1:
-      begin
-        FCurrentStep := 2;
-        Result := wnDoRequest;
-      end;
-    //Authentication does the 2>3 progression
-    3:
-      begin
-        FCurrentStep := 4;
+        Inc(FCurrentStep);
         Result := wnDoRequest;
       end;
     4:
@@ -1297,13 +1284,15 @@ begin
 end;
 
 procedure TIdSSPINTLMAuthentication.SetUserName(const Value: String);
-Var
+var
   S: String;
+  Idx: Integer;
 begin
   S := Value;
-  if IndyPos('\', S) > 0 then begin
-    Domain := Copy(S, 1, IndyPos('\', S) - 1);
-    Delete(S, 1, Length(Domain) + 1);
+  Idx := IndyPos('\', S);
+  if Idx > 0 then begin
+    Domain := Copy(S, 1, Idx - 1);
+    Delete(S, 1, Idx);
   end;
   inherited SetUserName(S);
 end;

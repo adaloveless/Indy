@@ -80,7 +80,6 @@ type
     procedure CloseBinding; override;
     function GetActive: Boolean; override;
     function GetBinding: TIdSocketHandle; override;
-    procedure Loaded; override;
     procedure MulticastBuffer(const AHost: string; const APort: Integer; const ABuffer : TIdBytes);
     procedure SetLoopback(const AValue: Boolean); virtual;
     procedure SetTTL(const AValue: Byte); virtual;
@@ -99,7 +98,7 @@ type
     property BoundPort: TIdPort read FBoundPort write FBoundPort;
     property Loopback: Boolean read FLoopback write SetLoopback default DEF_IMP_LOOPBACK;
     property MulticastGroup;
-    property IPVersion;
+    property IPVersion default ID_DEFAULT_IP_VERSION;
     property Port;
     property ReuseSocket;
     property TimeToLive: Byte read FTimeToLive write SetTTL default DEF_IMP_TTL;
@@ -122,16 +121,6 @@ begin
   FTimeToLive := DEF_IMP_TTL;
 end;
 
-procedure TIdIPMCastServer.Loaded;
-var
-  b: Boolean;
-begin
-  inherited Loaded;
-  b := FDsgnActive;
-  FDsgnActive := False;
-  Active := b;
-end;
-
 destructor TIdIPMCastServer.Destroy;
 begin
   Active := False;
@@ -145,7 +134,15 @@ end;
 
 function TIdIPMCastServer.GetActive: Boolean;
 begin
-  Result := (inherited GetActive) or (Assigned(FBinding) and FBinding.HandleAllocated);
+  if IsDesignTime then begin
+    // inherited GetActive keeps track of design-time Active property
+    Result := inherited GetActive;
+  end else begin
+    Result := Assigned(FBinding);
+    if Result then begin
+      Result := FBinding.HandleAllocated;
+    end;
+  end;
 end;
 
 function TIdIPMCastServer.GetBinding: TIdSocketHandle;
@@ -160,6 +157,7 @@ begin
     FBinding.Port := FBoundPort;
     FBinding.ReuseSocket := FReuseSocket;
     FBinding.Bind;
+    //TODO: FBinding.EnableMulticastInterface;
     ApplyTimeToLive;
     ApplyLoopback;
   end;

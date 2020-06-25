@@ -336,7 +336,7 @@ type
     function GetVerifyMode: TIdSSLVerifyModeSet;
     procedure InitContext(CtxMode: TIdSSLCtxMode);
   public
-    Parent: TObject;
+    {$IFDEF USE_OBJECT_ARC}[Weak]{$ENDIF} Parent: TObject;
     constructor Create;
     destructor Destroy; override;
     function Clone : TIdSSLContext;
@@ -367,7 +367,7 @@ type
 
   TIdSSLSocket = class(TObject)
   protected
-    fParent: TObject;
+    {$IFDEF USE_OBJECT_ARC}[Weak]{$ENDIF} fParent: TObject;
     fPeerCert: TIdX509;
     fSSL: PSSL;
     fSSLCipher: TIdSSLCipher;
@@ -708,6 +708,14 @@ type
   TIdCriticalSectionThreadList = TThreadList;
   TIdCriticalSectionList = TList;
   {$ENDIF}
+
+  // RLebeau 1/24/2019: defining this as a private implementation for now to
+  // avoid a change in the public interface above.  This should be rolled into
+  // the public interface at some point...
+  TIdSSLOptions_Internal = class(TIdSSLOptions)
+  public
+    {$IFDEF USE_OBJECT_ARC}[Weak]{$ENDIF} Parent: TObject;
+  end;
 
 var
   SSLIsLoaded: TIdThreadSafeBoolean = nil;
@@ -1216,33 +1224,30 @@ begin
   case cmd of
     X509_L_FILE_LOAD:
       begin
+        // Note that typecasting an AnsiChar as a WideChar below is normally a crazy
+        // thing to do.  The thing is that the OpenSSL API is based on PAnsiChar, and
+        // we are writing this function just for Unicode filenames.  argc is actually
+        // a PWideChar that has been coerced into a PAnsiChar so it can pass through
+        // OpenSSL APIs...
         case argl of
           X509_FILETYPE_DEFAULT:
             begin
-              LFileName := GetEnvironmentVariable
-                (String(X509_get_default_cert_file_env));
-              if LFileName <> '' then begin
-                LOk := Ord(Indy_unicode_X509_load_cert_crl_file(ctx, LFileName,
-                  X509_FILETYPE_PEM) <> 0);
-              end else begin
-                LOk := Ord(Indy_unicode_X509_load_cert_crl_file(ctx,
-                  String(X509_get_default_cert_file), X509_FILETYPE_PEM) <> 0);
+              LFileName := GetEnvironmentVariable(String(X509_get_default_cert_file_env));
+              if LFileName = '' then begin
+                LFileName := String(X509_get_default_cert_file);
               end;
+              LOk := Ord(Indy_unicode_X509_load_cert_crl_file(ctx, LFileName, X509_FILETYPE_PEM) <> 0);
               if LOk = 0 then begin
                 X509err(X509_F_BY_FILE_CTRL, X509_R_LOADING_DEFAULTS);
               end;
             end;
           X509_FILETYPE_PEM:
             begin
-              // Note that typecasting an AnsiChar as a WideChar is normally a crazy
-              // thing to do.  The thing is that the OpenSSL API is based on ASCII or
-              // UTF8, not Unicode and we are writing this just for Unicode filenames.
-              LFileName := PWideChar(argc);
-              LOk := Ord(Indy_unicode_X509_load_cert_crl_file(ctx, LFileName,
-                X509_FILETYPE_PEM) <> 0);
+              LFileName := PWideChar(Pointer(argc));
+              LOk := Ord(Indy_unicode_X509_load_cert_crl_file(ctx, LFileName, X509_FILETYPE_PEM) <> 0);
             end;
         else
-          LFileName := PWideChar(argc);
+          LFileName := PWideChar(Pointer(argc));
           LOk := Ord(Indy_unicode_X509_load_cert_file(ctx, LFileName, TIdC_INT(argl)) <> 0);
         end;
       end;
@@ -1285,49 +1290,52 @@ begin
       X509err(X509_F_X509_LOAD_CERT_FILE, ERR_R_SYS_LIB);
       Exit;
     end;
-    case _type of
-      X509_FILETYPE_PEM:
-        begin
-          repeat
-            LX := PEM_read_bio_X509_AUX(Lin, nil, nil, nil);
-            if not Assigned(LX) then begin
-              if ((ERR_GET_REASON(ERR_peek_last_error())
-                    = PEM_R_NO_START_LINE) and (count > 0)) then begin
-                ERR_clear_error();
-                Break;
-              end else begin
-                X509err(X509_F_X509_LOAD_CERT_FILE, ERR_R_PEM_LIB);
+    try
+      case _type of
+        X509_FILETYPE_PEM:
+          begin
+            repeat
+              LX := PEM_read_bio_X509_AUX(Lin, nil, nil, nil);
+              if not Assigned(LX) then begin
+                if ((ERR_GET_REASON(ERR_peek_last_error())
+                      = PEM_R_NO_START_LINE) and (count > 0)) then begin
+                  ERR_clear_error();
+                  Break;
+                end else begin
+                  X509err(X509_F_X509_LOAD_CERT_FILE, ERR_R_PEM_LIB);
+                  Exit;
+                end;
+              end;
+              i := X509_STORE_add_cert(ctx^.store_ctx, LX);
+              if i = 0 then begin
                 Exit;
               end;
+              Inc(count);
+              X509_Free(LX);
+            until False;
+            Result := count;
+          end;
+        X509_FILETYPE_ASN1:
+          begin
+            LX := d2i_X509_bio(Lin, nil);
+            if not Assigned(LX) then begin
+              X509err(X509_F_X509_LOAD_CERT_FILE, ERR_R_ASN1_LIB);
+              Exit;
             end;
             i := X509_STORE_add_cert(ctx^.store_ctx, LX);
             if i = 0 then begin
               Exit;
             end;
-            Inc(count);
-            X509_Free(LX);
-          until False;
-          Result := count;
-        end;
-      X509_FILETYPE_ASN1:
-        begin
-          LX := d2i_X509_bio(Lin, nil);
-          if not Assigned(LX) then begin
-            X509err(X509_F_X509_LOAD_CERT_FILE, ERR_R_ASN1_LIB);
-            Exit;
+            Result := i;
           end;
-          i := X509_STORE_add_cert(ctx^.store_ctx, LX);
-          if i = 0 then begin
-            Exit;
-          end;
-          Result := i;
-        end;
-    else
-      X509err(X509_F_X509_LOAD_CERT_FILE, X509_R_BAD_X509_FILETYPE);
-      Exit;
+      else
+        X509err(X509_F_X509_LOAD_CERT_FILE, X509_R_BAD_X509_FILETYPE);
+        Exit;
+      end;
+    finally
+      BIO_free(Lin);
     end;
   finally
-    BIO_free(Lin);
     FreeAndNil(LM);
   end;
 end;
@@ -1368,9 +1376,12 @@ begin
       X509err(X509_F_X509_LOAD_CERT_CRL_FILE, ERR_R_SYS_LIB);
       Exit;
     end;
-    Linf := PEM_X509_INFO_read_bio(Lin, nil, nil, nil);
+    try
+      Linf := PEM_X509_INFO_read_bio(Lin, nil, nil, nil);
+    finally
+      BIO_free(Lin);
+    end;
   finally
-    BIO_free(Lin);
     FreeAndNil(LM);
   end;
   if not Assigned(Linf) then begin
@@ -1733,14 +1744,13 @@ begin
     // intentional. X509_LOOKUP_load_file() takes a PAnsiChar as input, but
     // we are using Unicode strings here.  So casting the UnicodeString to a
     // raw Pointer and then passing that to X509_LOOKUP_load_file() as PAnsiChar.
-    // Indy_Unicode_X509_LOOKUP_file will process it as a PWideChar...
-    if (X509_LOOKUP_load_file(lookup, PAnsiChar(Pointer(AFileName)),
-        X509_FILETYPE_PEM) <> 1) then begin
+    // Indy_Unicode_X509_LOOKUP_file will cast it back to PWideChar for processing...
+    if (X509_LOOKUP_load_file(lookup, PAnsiChar(Pointer(AFileName)), X509_FILETYPE_PEM) <> 1) then begin
       Exit;
     end;
   end;
   if APathName <> '' then begin
-    { TODO: Figure out how to do the hash dir lookup with Unicode. }
+    { TODO: Figure out how to do the hash dir lookup with a Unicode path. }
     if (X509_STORE_load_locations(ctx, nil, PAnsiChar(AnsiString(APathName))) <> 1) then begin
       Exit;
     end;
@@ -2159,7 +2169,6 @@ end;
 
 {$IFNDEF OPENSSL_NO_BIO}
 procedure DumpCert(AOut: TStrings; AX509: PX509);
-{$IFDEF USE_INLINE} inline; {$ENDIF}
 var
   LMem: PBIO;
   LLen : TIdC_INT;
@@ -2167,25 +2176,25 @@ var
 begin
   if Assigned(X509_print) then begin
     LMem := BIO_new(BIO_s_mem);
-    try
-      X509_print(LMem, AX509);
-      LLen := BIO_get_mem_data( LMem, LBufPtr);
-      if (LLen > 0) and Assigned(LBufPtr) then begin
-        AOut.Text := IndyTextEncoding_UTF8.GetString(
-         {$IFNDEF VCL_6_OR_ABOVE}
-          // RLebeau: for some reason, Delphi 5 causes a "There is no overloaded
-          // version of 'GetString' that can be called with these arguments" compiler
-          // error if the PByte type-cast is used, even though GetString() actually
-          // expects a PByte as input.  Must be a compiler bug, as it compiles fine
-          // in Delphi 6...
-          LBufPtr
-          {$ELSE}
-          PByte(LBufPtr)
-          {$ENDIF}
-          , LLen);
-      end;
-    finally
-      if Assigned(LMem) then begin
+    if LMem <> nil then begin
+      try
+        X509_print(LMem, AX509);
+        LLen := BIO_get_mem_data(LMem, LBufPtr);
+        if (LLen > 0) and (LBufPtr <> nil) then begin
+          AOut.Text := IndyTextEncoding_UTF8.GetString(
+            {$IFNDEF VCL_6_OR_ABOVE}
+            // RLebeau: for some reason, Delphi 5 causes a "There is no overloaded
+            // version of 'GetString' that can be called with these arguments" compiler
+            // error if the PByte type-cast is used, even though GetString() actually
+            // expects a PByte as input.  Must be a compiler bug, as it compiles fine
+            // in Delphi 6.  So, converting to TIdBytes until I find a better solution...
+            RawToBytes(LBufPtr^, LLen)
+            {$ELSE}
+            PByte(LBufPtr), LLen
+            {$ENDIF}
+          );
+        end;
+      finally
         BIO_free(LMem);
       end;
     end;
@@ -2526,7 +2535,8 @@ end;
 procedure TIdServerIOHandlerSSLOpenSSL.InitComponent;
 begin
   inherited InitComponent;
-  fxSSLOptions := TIdSSLOptions.Create;
+  fxSSLOptions := TIdSSLOptions_Internal.Create;
+  TIdSSLOptions_Internal(fxSSLOptions).Parent := Self;
 end;
 
 destructor TIdServerIOHandlerSSLOpenSSL.Destroy;
@@ -2567,6 +2577,7 @@ function TIdServerIOHandlerSSLOpenSSL.Accept(ASocket: TIdSocketHandle;
 var
   LIO: TIdSSLIOHandlerSocketOpenSSL;
 begin
+  Result := nil;
   Assert(ASocket<>nil);
   Assert(fSSLContext<>nil);
   LIO := TIdSSLIOHandlerSocketOpenSSL.Create(nil);
@@ -2575,6 +2586,9 @@ begin
     LIO.Open;
     if LIO.Binding.Accept(ASocket.Handle) then begin
       //we need to pass the SSLOptions for the socket from the server
+      // TODO: wouldn't it be easier to just Assign() the server's SSLOptions
+      // here? Do we really need to share ownership of it?
+      // LIO.fxSSLOptions.Assign(fxSSLOptions);
       FreeAndNil(LIO.fxSSLOptions);
       LIO.IsPeer := True;
       LIO.fxSSLOptions := fxSSLOptions;
@@ -2645,10 +2659,9 @@ begin
     LIO.PassThrough := True;
     LIO.OnGetPassword := DoGetPassword;
     LIO.OnGetPasswordEx := OnGetPasswordEx;
-    //todo memleak here - setting IsPeer causes SSLOptions to not free
-    LIO.IsPeer := True;
+    LIO.IsPeer := True; // RLebeau 1/24/2019: is this still needed now?
     LIO.SSLOptions.Assign(SSLOptions);
-    LIO.SSLOptions.Mode := sslmBoth;{doesn't really matter}
+    LIO.SSLOptions.Mode := sslmBoth;{or sslmClient}{doesn't really matter}
     LIO.SSLContext := SSLContext;
   except
     LIO.Free;
@@ -2672,7 +2685,6 @@ begin
     LIO.PassThrough := True;
     LIO.OnGetPassword := DoGetPassword;
     LIO.OnGetPasswordEx := OnGetPasswordEx;
-    //todo memleak here - setting IsPeer causes SSLOptions to not free
     LIO.IsPeer := True;
     LIO.SSLOptions.Assign(SSLOptions);
     LIO.SSLOptions.Mode := sslmBoth;{or sslmServer}
@@ -2749,7 +2761,8 @@ procedure TIdSSLIOHandlerSocketOpenSSL.InitComponent;
 begin
   inherited InitComponent;
   IsPeer := False;
-  fxSSLOptions := TIdSSLOptions.Create;
+  fxSSLOptions := TIdSSLOptions_Internal.Create;
+  TIdSSLOptions_Internal(fxSSLOptions).Parent := Self;
   fSSLLayerClosed := True;
   fSSLContext := nil;
 end;
@@ -2757,10 +2770,15 @@ end;
 destructor TIdSSLIOHandlerSocketOpenSSL.Destroy;
 begin
   FreeAndNil(fSSLSocket);
-  if not IsPeer then begin
-    //we do not destroy these in IsPeer equals true
-    //because these do not belong to us when we are in a server.
+  //we do not destroy these if their Parent is not Self
+  //because these do not belong to us when we are in a server.
+  if (fSSLContext <> nil) and (fSSLContext.Parent = Self) then begin
     FreeAndNil(fSSLContext);
+  end;
+  if (fxSSLOptions <> nil) and
+     (fxSSLOptions is TIdSSLOptions_Internal) and
+     (TIdSSLOptions_Internal(fxSSLOptions).Parent = Self) then
+  begin
     FreeAndNil(fxSSLOptions);
   end;
   inherited Destroy;
@@ -2770,10 +2788,18 @@ procedure TIdSSLIOHandlerSocketOpenSSL.ConnectClient;
 var
   LPassThrough: Boolean;
 begin
+  // RLebeau: initialize OpenSSL before connecting the socket...
+  try
+    Init;
+  except
+    on EIdOSSLCouldNotLoadSSLLibrary do begin
+      if not PassThrough then raise;
+    end;
+  end;
   // RLebeau 1/11/07: In case a proxy is being used, pass through
   // any data from the base class unencrypted when setting up that
   // connection.  We should do this anyway since SSL hasn't been
-  // initialized yet!
+  // negotiated yet!
   LPassThrough := fPassThrough;
   fPassThrough := True;
   try
@@ -2789,13 +2815,6 @@ end;
 
 procedure TIdSSLIOHandlerSocketOpenSSL.StartSSL;
 begin
-  try
-    Init;
-  except
-    on EIdOSSLCouldNotLoadSSLLibrary do begin
-      if not PassThrough then raise;
-    end;
-  end;
   if not PassThrough then begin
     OpenEncodedConnection;
   end;
@@ -2804,8 +2823,12 @@ end;
 procedure TIdSSLIOHandlerSocketOpenSSL.Close;
 begin
   FreeAndNil(fSSLSocket);
-  if not IsPeer then begin
-    FreeAndNil(fSSLContext);
+  if fSSLContext <> nil then begin
+    if fSSLContext.Parent = Self then begin
+      FreeAndNil(fSSLContext);
+    end else begin
+      fSSLContext := nil;
+    end;
   end;
   inherited Close;
 end;
@@ -2837,16 +2860,29 @@ begin
           raise EIdOSSLCouldNotLoadSSLLibrary.Create(RSOSSLCouldNotLoadSSLLibrary);
         end;
       end;
-    {$IFDEF WIN32_OR_WIN64}
-    // begin bug fix
     end
-    else if BindingAllocated and IndyCheckWindowsVersion(6) then
-    begin
-      // disables Vista+ SSL_Read and SSL_Write timeout fix
-      Binding.SetSockOpt(Id_SOL_SOCKET, Id_SO_RCVTIMEO, 0);
-      Binding.SetSockOpt(Id_SOL_SOCKET, Id_SO_SNDTIMEO, 0);
-    // end bug fix
-    {$ENDIF}
+    else begin
+      // RLebeau 8/16/2019: need to call SSL_shutdown() here if the SSL/TLS session is active.
+      // This is for FTP when handling CCC and REIN commands. The SSL/TLS session needs to be
+      // shutdown cleanly on both ends without closing the underlying socket connection because
+      // it is going to be used for continued unsecure communications!
+      if (fSSLSocket <> nil) and (fSSLSocket.fSSL <> nil) then begin
+        // if SSL_shutdown() returns 0, a "close notify" was sent to the peer and SSL_shutdown()
+        // needs to be called again to receive the peer's "close notify" in response...
+        if SSL_shutdown(fSSLSocket.fSSL) = 0 then begin
+          SSL_shutdown(fSSLSocket.fSSL);
+        end;
+      end;
+      {$IFDEF WIN32_OR_WIN64}
+      // begin bug fix
+      if BindingAllocated and IndyCheckWindowsVersion(6) then
+      begin
+        // disables Vista+ SSL_Read and SSL_Write timeout fix
+        Binding.SetSockOpt(Id_SOL_SOCKET, Id_SO_RCVTIMEO, 0);
+        Binding.SetSockOpt(Id_SOL_SOCKET, Id_SO_SNDTIMEO, 0);
+      end;
+      // end bug fix
+      {$ENDIF}
     end;
     fPassThrough := Value;
   end;
@@ -2867,6 +2903,14 @@ procedure TIdSSLIOHandlerSocketOpenSSL.AfterAccept;
 begin
   try
     inherited AfterAccept;
+    // RLebeau: initialize OpenSSL after accepting a client socket...
+    try
+      Init;
+    except
+      on EIdOSSLCouldNotLoadSSLLibrary do begin
+        if not PassThrough then raise;
+      end;
+    end;
     StartSSL;
   except
     Close;
@@ -2947,6 +2991,8 @@ var
   {$ENDIF}
   LMode: TIdSSLMode;
   LHost: string;
+
+  // TODO: move the following to TIdSSLIOHandlerSocketBase...
 
   function GetURIHost: string;
   var
@@ -3253,6 +3299,7 @@ an invalid MAC when doing SSL.}
     SSL_CTX_set_default_passwd_cb(fContext, @PasswordCallback);
     SSL_CTX_set_default_passwd_cb_userdata(fContext, Self);
 //  end;
+
   SSL_CTX_set_default_verify_paths(fContext);
   // load key and certificate files
   if (RootCertFile <> '') or (VerifyDirs <> '') then begin    {Do not Localize}
@@ -3294,6 +3341,11 @@ an invalid MAC when doing SSL.}
       {$ENDIF}
     );
   end else begin
+    // RLebeau: don't override OpenSSL's default.  As OpenSSL evolves, the
+    // SSL_DEFAULT_CIPHER_LIST constant defined in the C/C++ SDK may change,
+    // while Indy's define of it might take some time to catch up.  We don't
+    // want users using an older default with newer DLLs...
+    (*
     error := SSL_CTX_set_cipher_list(fContext,
       {$IFDEF USE_MARSHALLED_PTRS}
       M.AsAnsi(SSL_DEFAULT_CIPHER_LIST).ToPointer
@@ -3301,6 +3353,8 @@ an invalid MAC when doing SSL.}
       SSL_DEFAULT_CIPHER_LIST
       {$ENDIF}
     );
+    *)
+    error := 1;
   end;
   if error <= 0 then begin
     // TODO: should this be using EIdOSSLSettingCipherError.RaiseException() instead?
@@ -3316,6 +3370,8 @@ an invalid MAC when doing SSL.}
   if RootCertFile <> '' then begin    {Do not Localize}
     SSL_CTX_set_client_CA_list(fContext, IndySSL_load_client_CA_file(RootCertFile));
   end
+
+  // TODO: provide an event so users can apply their own settings as needed...
 end;
 
 procedure TIdSSLContext.SetVerifyMode(Mode: TIdSSLVerifyModeSet; CheckRoutine: Boolean);
@@ -3438,6 +3494,9 @@ begin
 
       Todo:  Figure out a better fallback.
       }
+      // TODO: get rid of this fallack!  If the user didn't choose TLS 1.0, then
+      // don't falback to it, just fail instead, like with all of the other SSL/TLS
+      // versions...
     sslvTLSv1:
       Result := SelectTLS1Method(fMode);
     sslvTLSv1_1:
@@ -3563,10 +3622,12 @@ begin
   if fSSL <> nil then begin
     // TODO: should this be moved to TIdSSLContext instead?  Is this here
     // just to make sure the SSL shutdown does not log any messages?
+    {
     if (fSSLContext <> nil) and (fSSLContext.StatusInfoOn) and
        (fSSLContext.fContext <> nil) then begin
       SSL_CTX_set_info_callback(fSSLContext.fContext, nil);
     end;
+    }
     //SSL_set_shutdown(fSSL, SSL_SENT_SHUTDOWN);
     SSL_shutdown(fSSL);
     SSL_free(fSSL);
@@ -3763,7 +3824,7 @@ var
   ret, err: Integer;
 begin
   repeat
-    ret := SSL_read(fSSL, @ABuffer[0], Length(ABuffer));
+    ret := SSL_read(fSSL, PByte(ABuffer), Length(ABuffer));
     if ret > 0 then begin
       Result := ret;
       Exit;

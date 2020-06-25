@@ -199,7 +199,7 @@ type
   published
     property Host;
     {$IFNDEF DOTNET_1_1}
-    property IPVersion;
+    property IPVersion default ID_DEFAULT_IP_VERSION;
     {$ENDIF}
     property PacketSize;
     property ReceiveTimeout default Id_TIDICMP_ReceiveTimeout;
@@ -214,7 +214,7 @@ uses
   Windows,
   {$ENDIF}
   {$IFDEF USE_VCL_POSIX}
-    {$IFDEF DARWIN}
+    {$IFDEF OSX}
   Macapi.CoreServices,
     {$ENDIF}
   {$ENDIF}
